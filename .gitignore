@@ -1,4 +1,13 @@
-.Rproj.user
+# R
 .Rhistory
 .RData
 .Ruserdata
+.Rproj.user/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets
+.Renviron
+.env
