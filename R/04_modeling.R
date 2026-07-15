@@ -115,4 +115,44 @@ country_model_data %>%
 
 country_model_scaled <- scale(country_model_data)
 
+# choose k clusters
+
+set.seed(100)
+
+cluster_comparison <- tibble(
+  clusters = 2:6,
+  total_withinss = map_dbl(
+    clusters,
+    ~ kmeans(
+      country_model_scaled,
+      centers = .x,
+      nstart = 25
+    )$tot.withinss
+  )
+)
+
+cluster_comparison
+
+# plot cluster results
+
+ggplot(
+  cluster_comparison,
+  aes(
+    x = clusters,
+    y = total_withinss
+  )
+) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(
+    breaks = 2:6
+  ) +
+  labs(
+    title = "Choosing the number of country clusters",
+    subtitle = "Lower within-cluster variation indicates tighter clusters",
+    x = "Number of clusters",
+    y = "Total within-cluster sum of squares"
+  ) +
+  theme_minimal()
+
 
