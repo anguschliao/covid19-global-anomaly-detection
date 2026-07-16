@@ -1,5 +1,1232 @@
 ---
-title: "covid19_anomaly_detection"
-output: html_document
----
+title: "Detecting Anomalous COVID-19 Reporting Patterns"
+subtitle: "Exploratory Analysis and K-Means Clustering"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 2
+    number_sections: true
+    code_folding: hide
+    code_download: true
+    theme: flatly
+    highlight: tango
 
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_caption: true
+---
+```{r setup, include=FALSE}
+
+# package setup, install missing packages
+
+required_packages <- c(
+  "tidyverse",
+  "tidymodels",
+  "tidyclust"
+)
+
+installed_packages <- rownames(installed.packages())
+
+missing_packages <- setdiff(
+  required_packages,
+  installed_packages
+)
+
+if (length(missing_packages) > 0) {
+  install.packages(
+    missing_packages,
+    dependencies = TRUE
+  )
+}
+
+library(tidyverse)
+library(tidymodels)
+library(tidyclust)
+
+# knitr setup
+
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 10,
+  fig.height = 6,
+  out.width = "95%"
+)
+
+# seed setup
+
+set.seed(100)
+```
+
+# Introduction
+
+## Research Objective
+
+The objective of this project is to identify unusual geographical COVID-19 activity using exploratory visualization and K-Means clustering.
+
+The analysis addresses the following questions:
+
+1. Which countries have unusually high reported death-to-case ratios?
+2. Which US states experienced the largest single-day case increases per 100,000 residents?
+3. Can countries be grouped according to their cumulative COVID-19 death-to-case ratios 
+
+## Requirements
+
+Required Packages:
+
+- tidyverse
+- tidymodels
+- tidyclust
+
+set.seed(100)
+
+# Data
+
+## Data Source
+
+The data used in this project were published by the Johns Hopkins University through its COVID-19 GitHub repository.
+
+Four datasets are included in the analysis:
+
+Global Confirmed Cases
+Global Deaths
+US Confirmed Cases
+US Deaths
+
+## Reproducible Data Import
+
+All objects used in this report are created when the document is knitted. 
+
+```{r import-data}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names <- c(
+  "time_series_covid19_confirmed_US.csv",
+  "time_series_covid19_confirmed_global.csv",
+  "time_series_covid19_deaths_US.csv",
+  "time_series_covid19_deaths_global.csv"
+)
+
+urls <- str_c(url_in, file_names)
+
+confirmed_us_url     <- urls[1]
+confirmed_global_url <- urls[2]
+deaths_us_url        <- urls[3]
+deaths_global_url    <- urls[4]
+
+confirmed_us_raw <- read_csv(
+  confirmed_us_url,
+  show_col_types = FALSE
+)
+
+confirmed_global_raw <- read_csv(
+  confirmed_global_url,
+  show_col_types = FALSE
+)
+
+deaths_us_raw <- read_csv(
+  deaths_us_url,
+  show_col_types = FALSE
+)
+
+deaths_global_raw <- read_csv(
+  deaths_global_url,
+  show_col_types = FALSE
+)
+
+```
+
+# Data Preparation
+
+The original Johns Hopkins datasets use a wide format in which each date is stored in a separate column. The data were converted into a long format with one row per geographic unit and date.
+
+## Data Cleaning
+
+The main steps were:
+
+1. Convert date columns from wide to long format.
+2. Convert date values into R date objects.
+3. Aggregate records to the state level.
+4. Aggregate records to the country level.
+5. Join confirmed-case and death records.
+6. Calculate daily values from cumulative totals.
+7. Calculate population-adjusted US case rates.
+
+```{r clean-data}
+# Clean US confirmed cases -------------------------------------
+
+confirmed_us_clean <- confirmed_us_raw %>%
+  pivot_longer(
+    cols = -c(
+      UID,
+      iso2,
+      iso3,
+      code3,
+      FIPS,
+      Admin2,
+      Province_State,
+      Country_Region,
+      Lat,
+      Long_,
+      Combined_Key
+    ),
+    names_to = "date",
+    values_to = "confirmed"
+  ) %>%
+  mutate(
+    date = mdy(date)
+  ) %>%
+  group_by(
+    state = Province_State,
+    country = Country_Region,
+    date
+  ) %>%
+  summarize(
+    confirmed = sum(confirmed, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(
+    country,
+    state,
+    date
+  )
+
+
+# Clean global confirmed cases --------------------------------------------
+
+confirmed_global_clean <- confirmed_global_raw %>%
+  pivot_longer(
+    cols = -c(
+      `Province/State`,
+      `Country/Region`,
+      Lat,
+      Long
+    ),
+    names_to = "date",
+    values_to = "confirmed"
+  ) %>%
+  mutate(
+    date = mdy(date)
+  ) %>%
+  group_by(
+    country = `Country/Region`,
+    date
+  ) %>%
+  summarize(
+    confirmed = sum(confirmed, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(
+    country,
+    date
+  )
+
+# Clean United States deaths ----------------------------------------------
+
+deaths_us_clean <- deaths_us_raw %>%
+  pivot_longer(
+    cols = -c(
+      UID,
+      iso2,
+      iso3,
+      code3,
+      FIPS,
+      Admin2,
+      Province_State,
+      Country_Region,
+      Lat,
+      Long_,
+      Combined_Key,
+      Population
+    ),
+    names_to = "date",
+    values_to = "deaths"
+  ) %>%
+  mutate(
+    date = mdy(date)
+  ) %>%
+  group_by(
+    state = Province_State,
+    country = Country_Region,
+    date
+  ) %>%
+  summarize(
+    deaths = sum(deaths, na.rm = TRUE),
+    population = sum(Population, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(
+    country,
+    state,
+    date
+  )
+
+# Clean global deaths ------------------------------------------------------
+
+deaths_global_clean <- deaths_global_raw %>%
+  pivot_longer(
+    cols = -c(
+      `Province/State`,
+      `Country/Region`,
+      Lat,
+      Long
+    ),
+    names_to = "date",
+    values_to = "deaths"
+  ) %>%
+  mutate(
+    date = mdy(date)
+  ) %>%
+  group_by(
+    country = `Country/Region`,
+    date
+  ) %>%
+  summarize(
+    deaths = sum(deaths, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(
+    country,
+    date
+  )
+
+# Combine global confirmed cases and deaths -------------------------------
+
+covid_global_clean <- confirmed_global_clean %>%
+  full_join(
+    deaths_global_clean,
+    by = c("country", "date")
+  ) %>%
+  arrange(
+    country,
+    date
+  )
+
+# Combine United States confirmed cases and deaths ------------------------
+
+covid_us_clean <- confirmed_us_clean %>%
+  full_join(
+    deaths_us_clean,
+    by = c("state", "country", "date")
+  ) %>%
+  arrange(
+    country,
+    state,
+    date
+  )
+
+# Check combined datasets --------------------------------------------------
+
+glimpse(covid_global_clean)
+glimpse(covid_us_clean)
+
+# Calculate daily global values -------------------------------------------
+
+covid_global_clean <- covid_global_clean %>%
+  group_by(country) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(
+    daily_cases = confirmed - lag(confirmed),
+    daily_deaths = deaths - lag(deaths)
+  ) %>%
+  ungroup()
+
+# Calculate daily United States values ------------------------------------
+
+covid_us_clean <- covid_us_clean %>%
+  group_by(country, state) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(
+    daily_cases = confirmed - lag(confirmed),
+    daily_deaths = deaths - lag(deaths)
+  ) %>%
+  ungroup()
+
+
+```
+
+## Data Summaries
+
+```{r data summaries, echo = FALSE}
+# Check cleaned datasets ---------------------------------------------------
+
+cleaned_data_summary <- tibble(
+  dataset = c(
+    "US confirmed cases",
+    "Global confirmed cases",
+    "US deaths",
+    "Global deaths"
+  ),
+  rows = c(
+    nrow(confirmed_us_clean),
+    nrow(confirmed_global_clean),
+    nrow(deaths_us_clean),
+    nrow(deaths_global_clean)
+  ),
+  columns = c(
+    ncol(confirmed_us_clean),
+    ncol(confirmed_global_clean),
+    ncol(deaths_us_clean),
+    ncol(deaths_global_clean)
+  ),
+  geographic_units = c(
+    n_distinct(confirmed_us_clean$state),
+    n_distinct(confirmed_global_clean$country),
+    n_distinct(deaths_us_clean$state),
+    n_distinct(deaths_global_clean$country)
+  ),
+  first_date = c(
+    min(confirmed_us_clean$date, na.rm = TRUE),
+    min(confirmed_global_clean$date, na.rm = TRUE),
+    min(deaths_us_clean$date, na.rm = TRUE),
+    min(deaths_global_clean$date, na.rm = TRUE)
+  ),
+  last_date = c(
+    max(confirmed_us_clean$date, na.rm = TRUE),
+    max(confirmed_global_clean$date, na.rm = TRUE),
+    max(deaths_us_clean$date, na.rm = TRUE),
+    max(deaths_global_clean$date, na.rm = TRUE)
+  )
+)
+
+knitr::kable(
+  cleaned_data_summary,
+  col.names = c(
+    "Dataset",
+    "Rows",
+    "Columns",
+    "Geographic units",
+    "First date",
+    "Last date"
+  ),
+  caption = "Result of Data Cleaning",
+  format.args = list(
+    big.mark = ","
+  )
+)
+
+```
+
+## Data Validation
+
+```{r validation, echo = FALSE}
+# Validate final datasets --------------------------------------------------
+
+global_validation <- covid_global_clean %>%
+  summarize(
+    dataset = "Global",
+    geographic_units = n_distinct(country),
+    first_date = min(date, na.rm = TRUE),
+    last_date = max(date, na.rm = TRUE),
+    missing_confirmed = sum(is.na(confirmed)),
+    missing_deaths = sum(is.na(deaths)),
+    negative_daily_cases = sum(daily_cases < 0, na.rm = TRUE),
+    negative_daily_deaths = sum(daily_deaths < 0, na.rm = TRUE)
+  )
+
+us_validation <- covid_us_clean %>%
+  summarize(
+    dataset = "United States",
+    geographic_units = n_distinct(state),
+    first_date = min(date, na.rm = TRUE),
+    last_date = max(date, na.rm = TRUE),
+    missing_confirmed = sum(is.na(confirmed)),
+    missing_deaths = sum(is.na(deaths)),
+    negative_daily_cases = sum(daily_cases < 0, na.rm = TRUE),
+    negative_daily_deaths = sum(daily_deaths < 0, na.rm = TRUE)
+  )
+
+validation_summary <- bind_rows(
+  global_validation,
+  us_validation
+)
+
+knitr::kable(
+  validation_summary,
+  col.names = c(
+    "Dataset",
+    "Geographic units",
+    "First date",
+    "Last date",
+    "Missing confirmed",
+    "Missing deaths",
+    "Negative daily cases",
+    "Negative daily deaths"
+  ),
+  caption = "Result of Data Validation",
+  format.args = list(
+    big.mark = ","
+  )
+)
+```
+
+Daily case values can occasionally be negative because cumulative case totals are sometimes revised downward. These values were retained because historical corrections are meaningful and incorporated into the Kmeans Cluster Model.
+
+# Exploratory Data Analysis
+
+## Country Death-to-Case Ratios
+
+The first exploratory analysis examines cumulative deaths as a percentage of confirmed cases. The ratio is calculated for each country using the final date available in the dataset.
+
+Using IQR method to define anomaly boundaries, the countries that are beyond 1.5 IQR are isolated
+
+```{r country-ratio-data}
+# total deaths case ratio by country
+
+latest_global_date <- max(covid_global_clean$date, na.rm = TRUE)
+
+country_death_case_ratio <- covid_global_clean %>%
+  filter(date == latest_global_date) %>%
+  filter(
+    !is.na(confirmed),
+    !is.na(deaths),
+    confirmed > 0
+  ) %>%
+  mutate(
+    death_case_ratio = deaths / confirmed,
+    death_case_percent = death_case_ratio * 100
+  )
+
+minimum_confirmed_cases <- 100000
+
+country_death_case_ratio <- country_death_case_ratio %>%
+  filter(confirmed >= minimum_confirmed_cases)
+
+top_death_case_countries <- country_death_case_ratio %>%
+  select(
+    country,
+    confirmed,
+    deaths,
+    death_case_percent
+  ) %>%
+  arrange(desc(death_case_percent)) %>%
+  slice_head(n = 10)
+
+knitr::kable(
+  top_death_case_countries,
+  col.names = c(
+    "Country",
+    "Confirmed cases",
+    "Deaths",
+    "Death-case percent"
+  ),
+  caption = "Countries with the highest reported death-to-case percentages",
+  digits = c(0, 0, 0, 2),
+  format.args = list(
+    big.mark = ","
+  )
+)
+
+# Use IQR to identify countries with anomalous ratios
+
+ratio_q1 <- quantile(
+  country_death_case_ratio$death_case_percent,
+  0.25,
+  na.rm = TRUE
+)
+
+ratio_q3 <- quantile(
+  country_death_case_ratio$death_case_percent,
+  0.75,
+  na.rm = TRUE
+)
+
+ratio_iqr <- ratio_q3 - ratio_q1
+
+upper_ratio_limit <- ratio_q3 + 1.5 * ratio_iqr
+
+death_case_ratio_anomalies <- country_death_case_ratio %>%
+  filter(death_case_percent > upper_ratio_limit) %>%
+  select(
+    country,
+    confirmed,
+    deaths,
+    death_case_percent
+  ) %>%
+  arrange(desc(death_case_percent))
+
+knitr::kable(
+  death_case_ratio_anomalies,
+  col.names = c(
+    "Country",
+    "Confirmed cases",
+    "Deaths",
+    "Death-case percent"
+  ),
+  caption = "Countries above the 1.5 × IQR death-to-case threshold",
+  digits = c(0, 0, 0, 2),
+  format.args = list(
+    big.mark = ","
+  )
+)
+```
+
+```{r country-ratio-plot, fig.cap="Reported cumulative deaths as a proportion of confirmed cases by country.", echo = FALSE}
+# create scatter plot of death case ratios with anomalous countries highlighted
+
+ggplot(
+  country_death_case_ratio,
+  aes(
+    x = confirmed,
+    y = death_case_percent
+  )
+) +
+  geom_point() +
+  geom_point(
+    data = death_case_ratio_anomalies,
+    size = 2.5
+  ) +
+  geom_text(
+    data = death_case_ratio_anomalies,
+    aes(label = country),
+    nudge_y = 0.15,
+    check_overlap = TRUE
+  ) +
+  geom_hline(
+    yintercept = upper_ratio_limit,
+    linetype = "dashed"
+  ) +
+  scale_x_log10(
+    labels = scales::label_number(
+      scale_cut = scales::cut_short_scale()
+    )
+  ) +
+  labs(
+    title = "Potential anomalies in reported COVID-19 death-to-case ratios",
+    subtitle = "Countries above the 1.5 × IQR upper threshold are labelled",
+    x = "Total confirmed cases (log scale)",
+    y = "Deaths as a percentage of confirmed cases"
+  ) +
+  theme_minimal()
+```
+
+Egypt, Peru, Mexico, and Bosnia and Herzegovina were the 4 countries above the 1.5 IQR boundary and would require further analysis to understand the characteristics of pandemic management in those countries or if there are any unusual reporting methodologies implemented.
+
+## Largest Case Spikes in US States
+
+The second exploratory analysis identifies the four US states with the largest reported single-day case increases per 100,000 residents.
+
+Regions with populations of 500,000 or fewer were excluded as the datasets included minor overseas territories and cruise ships. 
+
+```{r top-state-spike-data}
+# US states and population
+
+state_populations <- covid_us_clean %>%
+  distinct(state, population) %>%
+  arrange(desc(population))
+
+# Based on US states and population, cut off for true states is 500,000
+
+# States with largest daily spikes per 100,000
+
+covid_us_explore <- covid_us_clean %>%
+  filter(population >= 500000) %>%
+  mutate(
+    daily_cases_per_100k = (daily_cases / population) * 100000
+  )
+
+largest_state_outbreaks <- covid_us_explore %>%
+  group_by(state) %>%
+  summarize(
+    max_daily_cases_per_100k = max(
+      daily_cases_per_100k,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(max_daily_cases_per_100k)) %>%
+  slice_head(n = 4)
+
+knitr::kable(
+  largest_state_outbreaks,
+  col.names = c(
+    "State",
+    "Maximum daily cases per 100,000"
+  ),
+  caption = "States with the largest population-adjusted single-day case spikes",
+  digits = 2,
+  format.args = list(
+    big.mark = ","
+  )
+)
+
+
+```
+
+```{r state-spike-plot, fig.cap="Daily reported cases per 100,000 residents for the four states with the largest single-day case spikes.", echo = FALSE}
+# Plot States with largest daily spikes per 100,000
+
+selected_states <- largest_state_outbreaks %>%
+  pull(state)
+
+us_plot_data <- covid_us_explore %>%
+  filter(state %in% selected_states)
+
+ggplot(
+  us_plot_data,
+  aes(
+    x = date,
+    y = daily_cases
+  )
+) +
+  geom_line() +
+  facet_wrap(
+    vars(state),
+    scales = "free_y"
+  ) +
+  labs(
+    x = "Date",
+    y = "Daily Cases"
+  ) +
+  theme_minimal()
+```
+
+The four largest single-day spikes all occurred during January 2022. Additional headline search during that period revealed that the shared timing is likely associated with the highly contagious Omicron variant wave rather than four unrelated outbreaks.
+
+However, adjusted for population these four states still had the largest spikes during that time and would benefit from further assessment of their public health efforts
+
+# Modeling - K-Means
+
+## Model Rationale
+
+The objective of this model is to provide further analysis on the death to cases ratio anomaly detection previously conducted through IQR outliers.
+
+K-Means is an unsupervised machine-learning method that groups observations according to their similarity across numerical features.
+
+An unsupervised method is appropriate for this because the dataset does not contain labels indicating whether a country is normal or anomalous based on their death and case rates. 
+
+Countries that are substantially different from the majority, or that are unusually distant from the centre of their assigned cluster can be identified as candidates for further investigation.
+
+## Feature Engineering
+
+K-Means requires one row for each observation being clustered. The global dataset contains repeated daily observations for each country so the data needs to be aggregated into country-level features.
+
+```{r country-feature-engineering}
+# Create country-level features ------------------------------------
+
+# Latest date
+
+latest_global_date <- max(
+  covid_global_clean$date,
+  na.rm = TRUE
+)
+
+# Latest cumulative totals by country
+
+latest_country_totals <- covid_global_clean %>%
+  filter(date == latest_global_date) %>%
+  select(
+    country,
+    confirmed,
+    deaths
+  )
+
+# Daily reporting features
+
+country_daily_features <- covid_global_clean %>%
+  group_by(country) %>%
+  summarize(
+    max_daily_cases = max(
+      daily_cases,
+      na.rm = TRUE
+    ),
+    sd_daily_cases = sd(
+      daily_cases,
+      na.rm = TRUE
+    ),
+    negative_case_corrections = sum(
+      daily_cases < 0,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  )
+
+# Combine country-level features
+
+country_anomaly_features <- latest_country_totals %>%
+  inner_join(
+    country_daily_features,
+    by = "country"
+  ) %>%
+  filter(
+    !is.na(confirmed),
+    !is.na(deaths),
+    confirmed >= 100000
+  ) %>%
+  mutate(
+    death_case_ratio = deaths / confirmed,
+    death_case_percent = death_case_ratio * 100
+  )
+```
+
+The model uses the following features:
+
+- Total cumulative confirmed cases
+- Total cumulative deaths
+- Largest reported single day increase)
+- Variablility in reported daily cases (standard deviation)
+
+The dataset does not include country populations, so focusing primarily on death-case ratio will shift the focus more on policy, reporting methods, and less so on overall raw size of deaths and cases.
+
+## Feature Standardization
+
+The numerical features have substantially different scales so standardization was applied before fitting
+
+```{r clustering-recipe}
+country_cluster_recipe <- recipe(
+  ~ .,
+  data = country_anomaly_features
+) %>%
+  update_role(
+    country,
+    new_role = "id"
+  ) %>%
+  step_log(
+    confirmed,
+    deaths,
+    max_daily_cases,
+    offset = 1
+  ) %>%
+  step_normalize(
+    all_numeric_predictors()
+  )
+```
+
+## Number of Clusters
+
+Several candidate values of k were tested using total within-cluster variance and then selected using the Elbow Method
+
+```{r fit-candidate-clusters}
+# Prepare data for k-means
+
+country_cluster_prepped <- country_cluster_recipe %>%
+  prep()
+
+country_cluster_processed <- country_cluster_prepped %>%
+  bake(
+    new_data = NULL
+  )
+
+# Remove ID column
+
+country_cluster_data <- country_cluster_processed %>%
+  select(-country)
+
+
+# evaluate clusters performance
+
+set.seed(100)
+
+cluster_comparison <- tibble(
+  clusters = 2:8,
+  total_withinss = map_dbl(
+    2:8,
+    ~ kmeans(
+      country_cluster_data,
+      centers = .x,
+      nstart = 25
+    )$tot.withinss
+  )
+)
+
+knitr::kable(
+  cluster_comparison,
+  col.names = c(
+    "Number of clusters",
+    "Total within-cluster sum of squares"
+  ),
+  caption = "K-Means performance across candidate cluster counts",
+  digits = 2,
+  format.args = list(
+    big.mark = ","
+  )
+)
+
+```
+
+```{r elbow-plot, fig.cap="Elbow Method for selecting candidate K-Means clusters", echo = FALSE}
+ggplot(
+  cluster_comparison,
+  aes(
+    x = clusters,
+    y = total_withinss
+  )
+) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(
+    breaks = 2:8
+  ) +
+  labs(
+    x = "Number of clusters",
+    y = "Total within-cluster sum of squares"
+  ) +
+  theme_minimal()
+
+```
+
+The within-cluster variance decreases sharply between 2-4 clusters, after which the improvements became more gradual.  
+
+## Final Model
+
+The selected value of k = 4 is passed through the k_means tidymodels spec and workflow, then fitted using the selected features  
+
+```{r final-kmeans-model}
+# Specify k-means model
+
+country_kmeans_spec <- k_means(
+  num_clusters = 4
+) %>%
+  set_engine(
+    "stats",
+    nstart = 25
+  )
+
+
+# create workflow
+
+country_kmeans_workflow <- workflow() %>%
+  add_recipe(
+    country_cluster_recipe
+  ) %>%
+  add_model(
+    country_kmeans_spec
+  )
+
+# fit model
+
+set.seed(100)
+
+country_kmeans_fit <- country_kmeans_workflow %>%
+  fit(
+    data = country_anomaly_features
+  )
+```
+
+## Assigning to Clusters
+
+Countries were then assigned to clusters and each cluster's characteristics were tabulated
+
+```{r augment-country-clusters}
+# Cluster assignment
+
+country_cluster_results <- augment(
+  country_kmeans_fit,
+  new_data = country_anomaly_features
+)
+
+```
+
+```{r cluster-count-table, echo = FALSE}
+# Summarize Clusters
+
+country_cluster_summary <- country_cluster_results %>%
+  group_by(
+    .pred_cluster
+  ) %>%
+  summarize(
+    number_of_countries = n(),
+    
+    median_confirmed = median(
+      confirmed,
+      na.rm = TRUE
+    ),
+    
+    median_deaths = median(
+      deaths,
+      na.rm = TRUE
+    ),
+    
+    median_death_case_percent = median(
+      death_case_percent,
+      na.rm = TRUE
+    ),
+    
+    median_max_daily_cases = median(
+      max_daily_cases,
+      na.rm = TRUE
+    ),
+    
+    median_sd_daily_cases = median(
+      sd_daily_cases,
+      na.rm = TRUE
+    ),
+    
+    median_negative_case_corrections = median(
+      negative_case_corrections,
+      na.rm = TRUE
+    ),
+    
+    .groups = "drop"
+  )
+  
+knitr::kable(
+  country_cluster_summary,
+  col.names = c(
+    "Cluster",
+    "Number of countries",
+    "Median confirmed cases",
+    "Median deaths",
+    "Median death-case percent",
+    "Median maximum daily cases",
+    "Median SD of daily cases",
+    "Median negative corrections"
+  ),
+  caption = "Summary statistics for each K-Means cluster",
+  digits = 2
+)
+
+```
+
+## Cluster Visualization
+
+```{r cluster-visualization, fig.cap="Country groupings produced by the four-cluster K-Means model.", echo = FALSE}
+# Plot country clusters -----------------------------------------
+
+ggplot(
+  country_cluster_results,
+  aes(
+    x = confirmed,
+    y = death_case_percent,
+    color = .pred_cluster
+  )
+) +
+  geom_point(
+    size = 2,
+    alpha = 0.8
+  ) +
+  scale_x_log10(
+    labels = scales::label_number(
+      scale_cut = scales::cut_short_scale()
+    )
+  ) +
+  labs(
+    title = "K-means clusters of global COVID-19 reporting patterns",
+    subtitle = "Countries grouped using cumulative and daily reporting features",
+    x = "Total confirmed cases (log scale)",
+    y = "Deaths as a percentage of confirmed cases",
+    color = "Cluster"
+  ) +
+  theme_minimal()
+
+```
+
+## Distance from Cluster Centre
+
+Based on the cluster assignments, euclidian distances were calculated for each country from the cluster centres 
+
+```{r cluster-distance-analysis, echo = FALSE}
+# Calculate distance from cluster centres -------------------------------
+
+# Add cluster assignments to the processed model data
+
+country_cluster_processed_results <- country_cluster_processed %>%
+  left_join(
+    country_cluster_results %>%
+      select(
+        country,
+        .pred_cluster
+      ),
+    by = "country"
+  )
+
+# Calculate the centre of each cluster using processed features
+
+country_cluster_centres <- country_cluster_processed_results %>%
+  group_by(
+    .pred_cluster
+  ) %>%
+  summarize(
+    across(
+      where(is.numeric),
+      mean,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  rename_with(
+    ~ paste0(.x, "_centre"),
+    where(is.numeric)
+  )
+
+# Join each country to the centre of its assigned cluster
+
+country_cluster_distances <- country_cluster_processed_results %>%
+  left_join(
+    country_cluster_centres,
+    by = ".pred_cluster"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    distance_from_centre = sqrt(
+      (confirmed - confirmed_centre)^2 +
+        (deaths - deaths_centre)^2 +
+        (max_daily_cases - max_daily_cases_centre)^2 +
+        (sd_daily_cases - sd_daily_cases_centre)^2 +
+        (
+          negative_case_corrections -
+            negative_case_corrections_centre
+        )^2 +
+        (death_case_ratio - death_case_ratio_centre)^2 +
+        (death_case_percent - death_case_percent_centre)^2
+    )
+  ) %>%
+  ungroup() %>%
+  select(
+    country,
+    .pred_cluster,
+    distance_from_centre
+  )
+
+# Add distances to original country results
+
+country_cluster_results <- country_cluster_results %>%
+  left_join(
+    country_cluster_distances,
+    by = c(
+      "country",
+      ".pred_cluster"
+    )
+  )
+```
+
+## Potential Anomalies
+
+Cluster 1 is the group with the highest deaths-case ratio and countries that are unusually far from the centre within this cluster may represent potential anomalies for the dataset
+
+Applying the 1.5 IQR rule to the cluster, we narrow down to the countries with the most unusual death-case ratios.
+
+```{r cluster-1-anomaly-analysis}
+# Cluster 1 countries ranked by distance from centre
+
+cluster_1_distance_table <- country_cluster_results %>%
+  filter(
+    .pred_cluster == "Cluster_1"
+  ) %>%
+  arrange(
+    desc(distance_from_centre)
+  ) %>%
+  select(
+    country,
+    confirmed,
+    deaths,
+    death_case_percent,
+    max_daily_cases,
+    sd_daily_cases,
+    negative_case_corrections,
+    distance_from_centre
+  )
+
+# Identify potential anomalies within Cluster 1
+
+cluster_1_distance_q1 <- quantile(
+  cluster_1_distance_table$distance_from_centre,
+  0.25,
+  na.rm = TRUE
+)
+
+cluster_1_distance_q3 <- quantile(
+  cluster_1_distance_table$distance_from_centre,
+  0.75,
+  na.rm = TRUE
+)
+
+cluster_1_distance_iqr <-
+  cluster_1_distance_q3 -
+  cluster_1_distance_q1
+
+cluster_1_distance_limit <-
+  cluster_1_distance_q3 +
+  1.5 * cluster_1_distance_iqr
+
+cluster_1_distance_table <- cluster_1_distance_table %>%
+  mutate(
+    potential_anomaly =
+      distance_from_centre >
+      cluster_1_distance_limit
+  ) %>%
+  arrange(
+    desc(potential_anomaly),
+    desc(distance_from_centre)
+  )
+```
+
+```{r cluster-1-anomaly-table, echo = FALSE}
+cluster_1_anomalies <- cluster_1_distance_table %>%
+  filter(
+    potential_anomaly
+  )
+
+knitr::kable(
+  cluster_1_anomalies,
+  col.names = c(
+    "Country",
+    "Confirmed cases",
+    "Deaths",
+    "Death-case percent",
+    "Maximum daily cases",
+    "SD of daily cases",
+    "Negative corrections",
+    "Distance from centre",
+    "Potential anomaly"
+  ),
+  caption = "Potential anomalies within Cluster 1",
+  digits = c(
+    0,
+    0,
+    0,
+    2,
+    0,
+    2,
+    0,
+    3,
+    0
+  ),
+  format.args = list(
+    big.mark = ","
+  )
+)
+```
+
+
+The result shows that Peru and Mexico qualify as anomalies in both the simple IQR analysis as well as the K-Means cluster analysis.  This gives additional support that the public health policies and reporting methods should be studied to prevent future pandemic response from reaching this level of escalation
+
+# Bias Identification
+
+The data may contain biases stemming from multiple sources.
+
+Testing and measurement methods:
+  
+Confirmed cases depend on testing availability and public willingness to take the tests.
+Countries that conducted more tests may report more cases
+  
+Death reporting qualification:
+
+Definition of a COVID-19 death differs between countries and changed during the pandemic
+  
+Timing lag:
+
+Daily cases represent the date when cases were reported rather than the exact date of infection
+Weekeneds and holidays as well a lab delays,and data ingestion issues can all contribute to artificial daily spikes or adjustments
+
+Population bias:
+
+Countries with higher population will likely report higher confirmed cases.  
+Differences in age distribution, population densities, and start of pandemic timing will all impact reporting
+
+
+# Conclusion
+
+This project developed a reproducible workflow for importing, cleaning, exploring, and modeling COVID-19 time-series data from the Johns Hopkins University GitHub repository.
+
+Two exploratory visualizations were used to investigate unusual patterns. The first examined country-level death-to-case ratios, while the second examined daily cases per 100,000 residents for the US states with the largest single-day spikes.
+
+A K-Means clustering model grouped countries according to cumulative confirmed cases, cumulative deaths, maximum daily cases, and daily reporting variability.
+
+The analysis demonstrates that unsupervised learning can help identify unusual observations when verified anomaly labels are unavailable. However, statistical anomalies should not automatically be interpreted as problematic candidates. Testing practice and capacity differences, demographic differences, and differences in reporting systems all influence the observed results.
