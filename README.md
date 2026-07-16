@@ -4,7 +4,7 @@
 
 This project analyzes the Johns Hopkins COVID-19 global time-series datasets using tidyverse ecosystem in R
 
-The research objective is to identify countries exhibiting unusual pandemic trajectories
+The research objective is to identify countries exhibiting unusual pandemic reporting patterns
 
 ## Tools
 
