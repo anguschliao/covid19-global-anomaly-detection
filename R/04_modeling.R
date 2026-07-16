@@ -243,3 +243,147 @@ ggplot(
     color = "Cluster"
   ) +
   theme_minimal()
+
+
+# Calculate distance from cluster centres -------------------------------
+
+# Add cluster assignments to the processed model data
+
+country_cluster_processed_results <- country_cluster_processed %>%
+  left_join(
+    country_cluster_results %>%
+      select(
+        country,
+        .pred_cluster
+      ),
+    by = "country"
+  )
+
+# Calculate the centre of each cluster using processed features
+
+country_cluster_centres <- country_cluster_processed_results %>%
+  group_by(
+    .pred_cluster
+  ) %>%
+  summarize(
+    across(
+      where(is.numeric),
+      mean,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  rename_with(
+    ~ paste0(.x, "_centre"),
+    where(is.numeric)
+  )
+
+# Join each country to the centre of its assigned cluster
+
+country_cluster_distances <- country_cluster_processed_results %>%
+  left_join(
+    country_cluster_centres,
+    by = ".pred_cluster"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    distance_from_centre = sqrt(
+      (confirmed - confirmed_centre)^2 +
+        (deaths - deaths_centre)^2 +
+        (max_daily_cases - max_daily_cases_centre)^2 +
+        (sd_daily_cases - sd_daily_cases_centre)^2 +
+        (
+          negative_case_corrections -
+            negative_case_corrections_centre
+        )^2 +
+        (death_case_ratio - death_case_ratio_centre)^2 +
+        (death_case_percent - death_case_percent_centre)^2
+    )
+  ) %>%
+  ungroup() %>%
+  select(
+    country,
+    .pred_cluster,
+    distance_from_centre
+  )
+
+# Add distances to original country results -----------------------------
+
+country_cluster_results <- country_cluster_results %>%
+  left_join(
+    country_cluster_distances,
+    by = c(
+      "country",
+      ".pred_cluster"
+    )
+  )
+
+country_cluster_results %>%
+  select(
+    country,
+    .pred_cluster,
+    death_case_percent,
+    distance_from_centre
+  ) %>%
+  arrange(
+    .pred_cluster,
+    desc(distance_from_centre)
+  )
+
+# Cluster 1 countries ranked by distance from centre --------------------
+
+cluster_1_distance_table <- country_cluster_results %>%
+  filter(
+    .pred_cluster == "Cluster_1"
+  ) %>%
+  arrange(
+    desc(distance_from_centre)
+  ) %>%
+  select(
+    country,
+    confirmed,
+    deaths,
+    death_case_percent,
+    max_daily_cases,
+    sd_daily_cases,
+    negative_case_corrections,
+    distance_from_centre
+  )
+
+# Identify potential anomalies within Cluster 1 ------------------------
+
+cluster_1_distance_q1 <- quantile(
+  cluster_1_distance_table$distance_from_centre,
+  0.25,
+  na.rm = TRUE
+)
+
+cluster_1_distance_q3 <- quantile(
+  cluster_1_distance_table$distance_from_centre,
+  0.75,
+  na.rm = TRUE
+)
+
+cluster_1_distance_iqr <-
+  cluster_1_distance_q3 -
+  cluster_1_distance_q1
+
+cluster_1_distance_limit <-
+  cluster_1_distance_q3 +
+  1.5 * cluster_1_distance_iqr
+
+cluster_1_distance_table <- cluster_1_distance_table %>%
+  mutate(
+    potential_anomaly =
+      distance_from_centre >
+      cluster_1_distance_limit
+  )
+
+cluster_1_distance_table <- cluster_1_distance_table %>%
+  arrange(
+    desc(potential_anomaly),
+    desc(distance_from_centre)
+  )
+
+cluster_1_distance_table
+
