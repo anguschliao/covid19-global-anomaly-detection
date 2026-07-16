@@ -1,7 +1,15 @@
 ---
 title: "Detecting Anomalous COVID-19 Reporting Patterns"
 subtitle: "Exploratory Analysis and K-Means Clustering"
+author: A.Liao
+date: July 2026
 output:
+
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_caption: true
   html_document:
     toc: true
     toc_float:
@@ -13,12 +21,6 @@ output:
     code_download: true
     theme: flatly
     highlight: tango
-
-  pdf_document:
-    toc: true
-    toc_depth: 3
-    number_sections: true
-    fig_caption: true
 ---
 ```{r setup, include=FALSE}
 
